@@ -113,22 +113,50 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         const dbUser = await db.query.users.findFirst({
           where: eq(users.id, user.id as string),
-          columns: { id: true, role: true, organizationId: true },
+          columns: { id: true, role: true, organizationId: true, tokenVersion: true },
         });
         if (dbUser) {
           token.uid = dbUser.id;
           token.role = dbUser.role;
           token.organizationId = dbUser.organizationId;
+          // `tv` claim is checked on every session resolve. If a teacher
+          // bumps a user's tokenVersion (password change, force-logout,
+          // suspected compromise), all live JWTs for that user become
+          // invalid on the next page request without us touching session
+          // storage. JWT-strategy auth can't be revoked otherwise.
+          token.tv = dbUser.tokenVersion;
         }
       }
       return token;
     },
     async session({ session, token }) {
-      if (token && session.user) {
-        session.user.id = token.uid as string;
-        session.user.role = token.role as "TEACHER" | "TA" | "STUDENT";
-        session.user.organizationId = token.organizationId as string;
+      if (!token || !session.user) return session;
+
+      // Token-version revocation check. We pay one DB read per resolve;
+      // for our scale (one teacher, dozens of students) this is fine.
+      // If this ever shows up in a profile we can cache for ~30s with a
+      // signed in-memory cache keyed by token.uid.
+      if (typeof token.uid === "string") {
+        const current = await db.query.users.findFirst({
+          where: eq(users.id, token.uid),
+          columns: { tokenVersion: true, deactivatedAt: true, deletedAt: true },
+        });
+        // Missing, deactivated, or deleted users get an empty session.
+        // Returning the session unmodified would let `auth()` succeed
+        // and then `requireSessionApi` would happily authorize. Force
+        // a logout by clearing the user fields — downstream guards
+        // treat that as unauthenticated.
+        if (!current || current.deactivatedAt || current.deletedAt) {
+          return { ...session, user: undefined as any };
+        }
+        if (current.tokenVersion !== token.tv) {
+          return { ...session, user: undefined as any };
+        }
       }
+
+      session.user.id = token.uid as string;
+      session.user.role = token.role as "TEACHER" | "TA" | "STUDENT";
+      session.user.organizationId = token.organizationId as string;
       return session;
     },
   },

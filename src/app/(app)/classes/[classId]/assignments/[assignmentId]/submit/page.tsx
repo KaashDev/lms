@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getAssignmentForStudent } from "@/lib/auth/assignment-access";
+import { applyOverride } from "@/lib/auth/effective-assignment";
 import { db } from "@/db";
 import { submissions, attachments } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -18,12 +19,15 @@ export default async function SubmitPage({
   const access = await getAssignmentForStudent(assignmentId, session.user);
   if (!access) notFound();
 
+  // Effective assignment (layers per-student override on top).
+  const effective = await applyOverride(access.assignment, session.user.id);
+
   // Hard close: REJECT policy + past availableUntil. Block before we even
   // create a submission row.
   const closed =
-    access.assignment.lateAcceptPolicy === "REJECT" &&
-    access.assignment.availableUntil &&
-    access.assignment.availableUntil < new Date();
+    effective.lateAcceptPolicy === "REJECT" &&
+    effective.availableUntil &&
+    effective.availableUntil < new Date();
 
   if (closed) {
     return (
@@ -130,7 +134,7 @@ export default async function SubmitPage({
         assignment={{
           allowTextEntry: access.assignment.allowTextEntry,
           allowFileUpload: access.assignment.allowFileUpload,
-          dueAt: access.assignment.dueAt ? access.assignment.dueAt.toISOString() : null,
+          dueAt: effective.dueAt ? effective.dueAt.toISOString() : null,
         }}
         attachments={attachmentRows.map((a) => ({
           id: a.id,

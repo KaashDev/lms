@@ -3,6 +3,8 @@ import { submissions, attachments } from "@/db/schema";
 import { requireSessionApi } from "@/lib/auth/guards";
 import { submitInput } from "@/lib/validators/assignments";
 import { getAssignmentForStudent } from "@/lib/auth/assignment-access";
+import { applyOverride } from "@/lib/auth/effective-assignment";
+import { isTiptapDocEmpty } from "@/lib/originality/stats";
 import { audit } from "@/lib/audit";
 import { and, eq } from "drizzle-orm";
 
@@ -44,20 +46,24 @@ export async function POST(
     return Response.json({ submission: sub });
   }
 
+  // Layer per-student override onto the assignment dates.
+  const effective = await applyOverride(access.assignment, session.user.id);
+
   // Hard close after availableUntil + REJECT.
   if (
-    access.assignment.lateAcceptPolicy === "REJECT" &&
-    access.assignment.availableUntil &&
-    access.assignment.availableUntil < new Date()
+    effective.lateAcceptPolicy === "REJECT" &&
+    effective.availableUntil &&
+    effective.availableUntil < new Date()
   ) {
     return Response.json({ error: "SUBMISSION_CLOSED" }, { status: 409 });
   }
 
-  // Must have at least something — either body text or an attachment.
-  const hasBody =
-    sub.body &&
-    typeof sub.body === "object" &&
-    JSON.stringify(sub.body).length > 50; // empty doc serializes ~30 chars
+  // Must have at least something — either real body text or an attachment.
+  // Walker-based check beats the old `JSON.stringify length > 50` heuristic;
+  // a doc full of empty paragraphs (which can happen via repeated Enter)
+  // wouldn't pass the old check below the threshold either, but a single
+  // typed space could squeak by. The walker counts non-whitespace chars.
+  const hasBody = !isTiptapDocEmpty(sub.body);
   const attachmentRow = await db.query.attachments.findFirst({
     where: eq(attachments.submissionId, submissionId),
     columns: { id: true },
@@ -69,7 +75,7 @@ export async function POST(
   // LATE if past due. Past due + REJECT was already blocked above.
   const now = new Date();
   const status: "SUBMITTED" | "LATE" =
-    access.assignment.dueAt && access.assignment.dueAt < now ? "LATE" : "SUBMITTED";
+    effective.dueAt && effective.dueAt < now ? "LATE" : "SUBMITTED";
 
   const [updated] = await db
     .update(submissions)

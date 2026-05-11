@@ -3,7 +3,73 @@ import {
   computeStaticStats,
   computeVersionSignals,
   tiptapToPlainText,
+  isTiptapDocEmpty,
 } from "@/lib/originality/stats";
+
+describe("isTiptapDocEmpty", () => {
+  it("treats null/undefined/non-objects as empty", () => {
+    expect(isTiptapDocEmpty(null)).toBe(true);
+    expect(isTiptapDocEmpty(undefined)).toBe(true);
+    expect(isTiptapDocEmpty("string")).toBe(true);
+    expect(isTiptapDocEmpty({})).toBe(true);
+  });
+
+  it("treats a doc with only empty paragraphs as empty", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        { type: "paragraph" },
+        { type: "paragraph", content: [] },
+        { type: "paragraph", content: [{ type: "text", text: "" }] },
+      ],
+    };
+    expect(isTiptapDocEmpty(doc)).toBe(true);
+  });
+
+  it("treats whitespace-only content as empty", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "   " }] },
+        { type: "paragraph", content: [{ type: "text", text: "\n\t" }] },
+        // Zero-width chars that some editors insert.
+        { type: "paragraph", content: [{ type: "text", text: "\u200B\uFEFF" }] },
+      ],
+    };
+    expect(isTiptapDocEmpty(doc)).toBe(true);
+  });
+
+  it("treats any real text as non-empty", () => {
+    const doc = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "x" }] }],
+    };
+    expect(isTiptapDocEmpty(doc)).toBe(false);
+  });
+
+  it("finds text deep in nested structures", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "buried text" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(isTiptapDocEmpty(doc)).toBe(false);
+  });
+});
 
 describe("tiptapToPlainText", () => {
   it("extracts text from a simple doc", () => {

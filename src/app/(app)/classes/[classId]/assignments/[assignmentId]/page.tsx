@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getAssignmentForAnyMember } from "@/lib/auth/assignment-access";
+import { applyOverride } from "@/lib/auth/effective-assignment";
 import { TeacherAssignmentView } from "@/components/assignments/teacher-view";
 import { StudentAssignmentView } from "@/components/assignments/student-view";
 
@@ -16,6 +17,13 @@ export default async function AssignmentDetailPage({
   const access = await getAssignmentForAnyMember(assignmentId, session.user);
   if (!access) notFound();
 
+  // For students, layer in any personal override so the displayed due
+  // date matches what the submission flow actually enforces.
+  const displayedAssignment =
+    access.kind === "student"
+      ? await applyOverride(access.assignment, session.user.id)
+      : access.assignment;
+
   return (
     <div className="space-y-6">
       <header>
@@ -29,9 +37,15 @@ export default async function AssignmentDetailPage({
       </header>
 
       {access.kind === "teacher" ? (
-        <TeacherAssignmentView classId={classId} assignment={serializeAssignment(access.assignment)} />
+        <TeacherAssignmentView
+          classId={classId}
+          assignment={serializeAssignment(displayedAssignment)}
+        />
       ) : (
-        <StudentAssignmentView classId={classId} assignment={serializeAssignment(access.assignment)} />
+        <StudentAssignmentView
+          classId={classId}
+          assignment={serializeAssignment(displayedAssignment)}
+        />
       )}
     </div>
   );

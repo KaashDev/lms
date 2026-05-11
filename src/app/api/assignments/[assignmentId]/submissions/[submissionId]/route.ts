@@ -2,12 +2,9 @@ import { db } from "@/db";
 import { submissions, submissionVersions, assignments } from "@/db/schema";
 import { requireSessionApi } from "@/lib/auth/guards";
 import { saveSubmissionInput } from "@/lib/validators/assignments";
-import {
-  getAssignmentForAnyMember,
-  getAssignmentForTeacher,
-} from "@/lib/auth/assignment-access";
+import { getAssignmentForAnyMember } from "@/lib/auth/assignment-access";
+import { applyOverride } from "@/lib/auth/effective-assignment";
 import { tiptapToPlainText, computeStaticStats } from "@/lib/originality/stats";
-import { audit } from "@/lib/audit";
 import { and, eq, desc } from "drizzle-orm";
 
 // Shared loader. Returns submission + assignment + role.
@@ -84,6 +81,9 @@ export async function PATCH(
     return Response.json({ error: "NOT_FOUND" }, { status: 404 });
   }
 
+  // Layer per-student override onto the assignment dates.
+  const effective = await applyOverride(access.assignment, session.user.id);
+
   // Cannot edit after final submission. Teachers reopen via a different
   // endpoint in step 3b.
   if (
@@ -96,9 +96,9 @@ export async function PATCH(
 
   // Reject if availableUntil has passed and policy is REJECT.
   if (
-    access.assignment.lateAcceptPolicy === "REJECT" &&
-    access.assignment.availableUntil &&
-    access.assignment.availableUntil < new Date()
+    effective.lateAcceptPolicy === "REJECT" &&
+    effective.availableUntil &&
+    effective.availableUntil < new Date()
   ) {
     return Response.json({ error: "SUBMISSION_CLOSED" }, { status: 409 });
   }

@@ -26,6 +26,19 @@ export async function POST(req: Request) {
     where: eq(classInvites.tokenHash, hashToken(parsed.data.token)),
   });
   if (!invite) return Response.json({ error: "INVALID_TOKEN" }, { status: 404 });
+  // Revoked (e.g. because the class was deleted) or already-accepted
+  // invites get a clear error instead of an opaque 500 from the later
+  // FK lookup. We distinguish the two so the UI can render a useful
+  // message either way.
+  if (invite.revokedAt) {
+    return Response.json({ error: "INVITE_REVOKED" }, { status: 410 });
+  }
+  if (invite.acceptedAt) {
+    return Response.json({ error: "INVITE_ALREADY_USED" }, { status: 409 });
+  }
+  if (invite.expires && invite.expires < new Date()) {
+    return Response.json({ error: "INVITE_EXPIRED" }, { status: 410 });
+  }
 
   const me = await db.query.users.findFirst({
     where: eq(users.id, session.user.id),

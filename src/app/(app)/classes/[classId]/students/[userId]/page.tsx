@@ -2,9 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { classes, enrollments, users } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { classes, enrollments, users, assignments, submissions, assignmentOverrides } from "@/db/schema";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { StudentProfileActions } from "@/components/roster/student-profile-actions";
+import { StudentAssignmentsList } from "@/components/roster/student-assignments-list";
 
 export default async function StudentProfilePage({
   params,
@@ -42,6 +43,55 @@ export default async function StudentProfilePage({
   });
   if (!user) notFound();
 
+  // Load this class's published assignments + this student's submission
+  // for each + any per-student override.
+  const assignmentRows = await db.query.assignments.findMany({
+    where: and(eq(assignments.classId, classId), isNull(assignments.deletedAt)),
+    orderBy: [asc(assignments.dueAt), asc(assignments.title)],
+  });
+
+  const subRows = await db.query.submissions.findMany({
+    where: and(
+      eq(submissions.userId, userId),
+      eq(submissions.isCountedAttempt, true)
+    ),
+  });
+  const subByAssignment = new Map(subRows.map((s) => [s.assignmentId, s]));
+
+  const overrideRows = await db.query.assignmentOverrides.findMany({
+    where: eq(assignmentOverrides.userId, userId),
+  });
+  const overrideByAssignment = new Map(overrideRows.map((o) => [o.assignmentId, o]));
+
+  const composed = assignmentRows.map((a) => {
+    const sub = subByAssignment.get(a.id);
+    const ov = overrideByAssignment.get(a.id);
+    return {
+      id: a.id,
+      title: a.title,
+      state: a.state,
+      pointsPossible: a.pointsPossible,
+      dueAt: a.dueAt ? a.dueAt.toISOString() : null,
+      availableUntil: a.availableUntil ? a.availableUntil.toISOString() : null,
+      submission: sub
+        ? {
+            id: sub.id,
+            status: sub.status,
+            score: sub.score,
+            postedAt: sub.postedAt ? sub.postedAt.toISOString() : null,
+          }
+        : null,
+      override: ov
+        ? {
+            dueAt: ov.dueAt ? ov.dueAt.toISOString() : null,
+            availableUntil: ov.availableUntil ? ov.availableUntil.toISOString() : null,
+            timeLimitSeconds: ov.timeLimitSeconds,
+            allowedAttempts: ov.allowedAttempts,
+          }
+        : null,
+    };
+  });
+
   return (
     <div className="space-y-6">
       <header>
@@ -68,12 +118,11 @@ export default async function StudentProfilePage({
         />
       </section>
 
-      <section className="card p-4">
-        <h2 className="font-display text-lg mb-2">Submissions & grades</h2>
-        <p className="text-sm text-muted">
-          Comes alive in step 3 (assignments) and step 5 (gradebook).
-        </p>
-      </section>
+      <StudentAssignmentsList
+        classId={classId}
+        userId={userId}
+        assignments={composed}
+      />
 
       <StudentProfileActions
         classId={classId}

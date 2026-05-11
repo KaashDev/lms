@@ -50,6 +50,11 @@ export const users = pgTable(
     // Argon2id hash. Null for users who only auth via magic link / OAuth.
     // We never store plaintext, never log this column.
     passwordHash: text("password_hash"),
+    // Bumped on password change, force-logout, or compromised-account
+    // recovery. Live JWTs whose `tv` claim doesn't match the user's
+    // current tokenVersion are rejected by the session callback.
+    // Default 0 so existing users don't need a backfill.
+    tokenVersion: integer("token_version").notNull().default(0),
     timezone: text("timezone"), // optional override of org default
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }),
     // Soft-deactivate without losing submissions. Different from deletedAt

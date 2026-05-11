@@ -40,6 +40,36 @@ export interface VersionSignals {
  * Extract plain text from a Tiptap JSON doc. Walks the tree, collects
  * text from text nodes. No formatting, no markup.
  */
+/**
+ * Returns true if a Tiptap doc has no meaningful content. Used to gate
+ * submission finalization — students can't submit a doc that's just an
+ * empty paragraph or pure whitespace.
+ *
+ * Walks the tree and counts non-whitespace text characters. Anything > 0
+ * is non-empty. Cheaper and more robust than JSON.stringify length checks.
+ */
+export function isTiptapDocEmpty(doc: unknown): boolean {
+  if (!doc || typeof doc !== "object") return true;
+  let nonWhitespaceChars = 0;
+  function walk(node: any) {
+    if (!node) return;
+    if (typeof node.text === "string") {
+      // Trim whitespace and zero-width characters before counting.
+      const cleaned = node.text.replace(/[\s\u200B-\u200D\uFEFF]/g, "");
+      nonWhitespaceChars += cleaned.length;
+      if (nonWhitespaceChars > 0) return; // short-circuit
+    }
+    if (Array.isArray(node.content)) {
+      for (const c of node.content) {
+        walk(c);
+        if (nonWhitespaceChars > 0) return;
+      }
+    }
+  }
+  walk(doc);
+  return nonWhitespaceChars === 0;
+}
+
 export function tiptapToPlainText(doc: unknown): string {
   if (!doc || typeof doc !== "object") return "";
   const parts: string[] = [];

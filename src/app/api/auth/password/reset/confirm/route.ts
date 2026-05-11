@@ -4,7 +4,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { hashToken } from "@/lib/invites/tokens";
 import { audit } from "@/lib/audit";
 import { z } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 const confirmInput = z.object({
   token: z.string().min(16).max(128),
@@ -29,8 +29,17 @@ export async function POST(req: Request) {
 
   const passwordHash = await hashPassword(parsed.data.password);
 
-  // Atomic: update password + consume token.
-  await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, token.userId));
+  // Atomic: update password + bump tokenVersion + consume token.
+  // The tokenVersion bump invalidates any JWTs out in the wild — important
+  // for the "someone reset my password" recovery flow.
+  await db
+    .update(users)
+    .set({
+      passwordHash,
+      tokenVersion: sql`${users.tokenVersion} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, token.userId));
   await db
     .update(passwordResetTokens)
     .set({ consumedAt: new Date() })

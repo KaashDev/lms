@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { assignments, classes, enrollments } from "@/db/schema";
+import { assignments, classes, enrollments, submissions } from "@/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
 
 interface SessionUser {
@@ -104,4 +104,55 @@ export async function getAssignmentForAnyMember(
   const s = await getAssignmentForStudent(assignmentId, user);
   if (s) return { kind: "student", ...s };
   return null;
+}
+
+/**
+ * Load a submission by id, authorizing the caller. Returns the submission
+ * row along with the assignment and class, plus the caller's role.
+ *
+ * Teacher: any submission in their class. Student: only their own.
+ * Returns null when not visible (either nonexistent or not authorized).
+ */
+export async function getSubmissionForCaller(
+  submissionId: string,
+  user: SessionUser
+) {
+  const rows = await db
+    .select({
+      submission: submissions,
+      assignment: assignments,
+      class: classes,
+    })
+    .from(submissions)
+    .innerJoin(assignments, eq(assignments.id, submissions.assignmentId))
+    .innerJoin(classes, eq(classes.id, assignments.classId))
+    .where(
+      and(
+        eq(submissions.id, submissionId),
+        eq(classes.organizationId, user.organizationId),
+        isNull(assignments.deletedAt)
+      )
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  if (user.role === "TEACHER") {
+    if (row.class.teacherId !== user.id) return null;
+    return { kind: "teacher" as const, ...row };
+  }
+
+  // Student: must own the submission AND be actively enrolled.
+  if (row.submission.userId !== user.id) return null;
+  const enrolled = await db.query.enrollments.findFirst({
+    where: and(
+      eq(enrollments.classId, row.class.id),
+      eq(enrollments.userId, user.id),
+      eq(enrollments.status, "ACTIVE"),
+      isNull(enrollments.deletedAt)
+    ),
+    columns: { id: true },
+  });
+  if (!enrolled) return null;
+  return { kind: "student" as const, ...row };
 }

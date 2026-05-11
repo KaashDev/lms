@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { classes } from "@/db/schema";
+import { classes, classInvites } from "@/db/schema";
 import { requireSessionApi } from "@/lib/auth/guards";
 import { updateClassInput, archiveClassInput } from "@/lib/validators/classes";
 import { audit } from "@/lib/audit";
@@ -121,13 +121,29 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ classId: st
   if (cls.deletedAt) return Response.json({ class: cls });
 
   await db.update(classes).set({ deletedAt: new Date() }).where(eq(classes.id, classId));
+
+  // Revoke pending invites so students who try the link see a clear error
+  // instead of landing on a 404 join page. Only un-revoked, un-accepted
+  // rows; we don't touch rows that already have either timestamp set.
+  const revokedCount = await db
+    .update(classInvites)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(classInvites.classId, classId),
+        isNull(classInvites.revokedAt),
+        isNull(classInvites.acceptedAt)
+      )
+    )
+    .returning({ id: classInvites.id });
+
   await audit({
     organizationId: session.user.organizationId,
     actorId: session.user.id,
     action: "class.deleted",
     targetType: "class",
     targetId: classId,
-    metadata: { title: cls.title },
+    metadata: { title: cls.title, invitesRevoked: revokedCount.length },
   });
   return Response.json({ ok: true });
 }

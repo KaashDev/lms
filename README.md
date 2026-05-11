@@ -1,6 +1,6 @@
 # LMS — Self-hosted Canvas Replacement
 
-Built incrementally. This bundle covers **steps 1, 2, and 3a**:
+Built incrementally. This bundle covers **steps 1, 2, 3a, and 3b-core**:
 
 - **Step 1**: Drizzle schema for all features, Auth.js with three providers,
   Postgres rate limiting, role-checked session helpers, Railway deploy config.
@@ -13,9 +13,19 @@ Built incrementally. This bundle covers **steps 1, 2, and 3a**:
   storage (Cloudflare R2), 30-second autosave, manual save, paste detection
   on >100-char paste events, full version history, submission lifecycle
   (NOT_STARTED → IN_PROGRESS → SUBMITTED/LATE), originality stats helpers.
+- **Step 3b-core**: Grading UI (score + general feedback editor), anchored
+  highlight comments (select passage → comment), comment threads with
+  resolve/unresolve, submission state actions (return/missing/excuse/reopen),
+  posting policy (grades hidden until posted), per-student per-assignment
+  overrides for due-date and close-date (IEP / 504 / makeup), attachment
+  download via signed URLs, originality "writing signals" panel surfacing
+  the stats from 3a. Plus three deferred fixes from 3a: `tokenVersion` for
+  JWT revocation, walker-based empty-body detection, and pending invites
+  revoked when their class is soft-deleted.
 
-**Step 3b (next bundle)** will add: grading UI, anchored highlight comments,
-rubrics, per-student overrides, bulk submission download, posting policy.
+**Step 3c (next bundle)** will add: rubrics (define + attach + click-grade
++ auto-score), bulk actions (download all submissions as zip, mark missing
+en masse, post all grades), and the Postgres-backed job worker.
 
 ## Setup
 
@@ -183,9 +193,66 @@ upload tests (set `S3_*` in your `.env`); the rest work without it.
 - [ ] As student with a future assignment due in 3 days → "Upcoming this week" lists it
 - [ ] As teacher after a student submits → "Needs grading" shows the class with `N submissions to grade`
 
+## Manual test checklist for step 3b-core
+
+The grading UI is the centerpiece; everything else hangs off it. Run as
+teacher unless noted.
+
+### Grading flow
+
+- [ ] On an assignment with a SUBMITTED student, click "View submissions" → table lists all enrolled students, the submitter near the top with "needs grading"
+- [ ] Filter "Needs grading" → only the submitters appear; "Missing / not started" → only the non-submitters; "Graded" → empty until you grade someone
+- [ ] Click "Open" on a SUBMITTED row → lands on the grader page
+- [ ] Enter a score, save → "Saved" indicator, submission row in the list now shows score with `(hidden)`
+- [ ] As that student in another browser → assignment page still says "Submitted", no score visible
+- [ ] Back as teacher → click "Save & post" → indicator flips to "Posted"
+- [ ] As student → score is now visible on the assignment detail page AND on `/submit/preview` along with the rich-text feedback
+
+### Anchored comments
+
+- [ ] In the grader, select a passage of the submission body → an inline composer appears with the quoted passage shown
+- [ ] Type a comment, click "Post comment" → comment appears in the right sidebar with the quote in italic above it, anchored comments sort to top
+- [ ] Hover the comment in the sidebar (no highlight on the body yet — see known limitations)
+- [ ] Click "Resolve" → comment dims and moves to the bottom; "Unresolve" reverses it
+- [ ] Write a "General feedback" box comment without selecting anything → appears in the sidebar without a quote block
+- [ ] Verify in DB: `select anchor_start, anchor_end, anchor_version_id from submission_comments order by created_at desc limit 1;` for an anchored comment — all three are populated, anchor_version_id matches the latest version row
+- [ ] As student (after posting grade) → posted comments visible on `/submit/preview` with the quote; un-posted comments hidden
+
+### Status actions
+
+- [ ] Click "Return" on a graded submission → status flips to RETURNED, grade posts automatically, student can no longer edit
+- [ ] Click "Reopen" → status flips to IN_PROGRESS, submittedAt cleared, postedAt cleared; as student you can edit and resubmit
+- [ ] On a student who never submitted, click "Mark missing" → status MISSING; clicking it on an already-SUBMITTED row gives 409 INVALID_TRANSITION
+- [ ] Click "Excuse" → status EXCUSED; gradebook math (step 5) will exclude this
+
+### Per-student overrides
+
+- [ ] Roster → click a student → "Assignments & overrides" table loads with all assignments
+- [ ] Click "Add override" on a future assignment → datetime inputs appear → set a custom due date one week later → Save
+- [ ] As that student → assignment detail page shows the OVERRIDE due date, not the assignment default
+- [ ] As teacher, set the assignment's default `availableUntil` to 1 minute ago with REJECT policy. As that student → submit page still works because the override extends `availableUntil` (if you set it). Without the override, you'd see "Submissions closed."
+- [ ] Click "Remove" on the override → confirm prompt → override row deleted; default dates resume
+
+### Token version / force-logout
+
+- [ ] Sign in as a student in Browser A. As teacher in Browser B: `curl -X POST -H "Cookie: <teacher-session-cookie>" /api/users/:studentUserId/force-logout` → 200
+- [ ] In Browser A, navigate anywhere → session is gone, you're redirected to `/login`
+- [ ] Reset your own password via `/login/reset` → after setting new password, any other browser session for that account is also kicked
+
+### Revoked invite
+
+- [ ] Send a single invite to `test@example.com`. Don't accept it.
+- [ ] Soft-delete the class → audit log shows `invitesRevoked: 1`
+- [ ] Open the invite email link → 410 GONE, "Invite revoked" page (or JSON if hit raw)
+
+### Attachment downloads
+
+- [ ] As teacher, open the grader for a submission with an attachment → click the filename → opens the file in a new tab (302 redirect to a signed R2 URL valid for 5 minutes)
+- [ ] As a different student in the same class → `GET /api/attachments/:id/download` returns 404 (auth gate honors submission ownership)
+
 ## What's NOT here yet
 
-- **Grading UI, anchored comments, rubrics, overrides, bulk download** — step 3b
+- **Rubrics + bulk actions + job worker** — step 3c
 - **Quizzes + QTI** — step 4
 - **Gradebook math** — step 5
 - **Announcements, messaging, notifications beyond invites** — step 6
@@ -218,16 +285,43 @@ keeping them recoverable. Belt + braces.
 
 ## Known gaps still to address
 
-1. **`tokenVersion` for JWT invalidation.** Not strictly needed yet, but
-   adding it before step 3b (the grading interface is when device-loss
-   scenarios actually matter) is easier now than later.
-2. **Email verification for join-code-path users.** Their `emailVerified` is
+1. **Email verification for join-code-path users.** Their `emailVerified` is
    null. The notification system in step 6 won't email them until we add a
    "verify your email" flow on first login. ~1 hour task.
-3. **Revoke pending invites when a class is deleted.** Currently cascade-deletes
-   the invite rows but the email links 404 silently. Cheap fix, do it with step 3b.
-4. **Empty-body detection on submit is heuristic.** We measure `JSON.stringify(body).length > 50` — works because Tiptap's empty doc serializes to ~30 chars, but a single typed space + Enter could create a doc that scrapes past. Real fix: walk the doc and count text nodes. Not urgent.
-5. **DOCX magic-byte check verifies the ZIP header only.** All Office files are zips, so a `.zip` renamed to `.docx` would pass when paired with the right MIME header. We'd need to parse the manifest to be sure. The MIME-type gate plus the extension check makes this a narrow edge case.
+2. **DOCX magic-byte check verifies the ZIP header only.** All Office files
+   are zips, so a `.zip` renamed to `.docx` would pass when paired with the
+   right MIME header. We'd need to parse the manifest to be sure. The
+   MIME-type gate plus the extension check makes this a narrow edge case.
+3. **Anchored comment highlights don't render in-line on the submission
+   body.** The comment appears in the sidebar with the quoted passage, but
+   the original passage in the body isn't visually highlighted. Doing this
+   means walking the rendered DOM and wrapping text nodes between
+   `anchorStart` and `anchorEnd` with a `<mark>` — possible but adds DOM
+   complexity and risks breaking Tiptap's render. Deferred to step 3c.
+4. **DOM Range → character offset walker (`src/lib/grading/range.ts`) is
+   logic-only, no unit tests.** Needs jsdom or a browser-test runner to
+   exercise. Verified by inspection but unproven against edge cases like
+   selections that cross multiple block boundaries.
+5. **`applyOverride` runs one extra query per assignment read.** For the
+   single-teacher case (dozens of students) this is fine; if scale grows
+   we'd batch overrides into the initial assignment query or cache per
+   request.
+6. **Dashboard "Upcoming this week" doesn't apply overrides.** A student
+   with an extended due date will still see the assignment under its
+   default due date in the dashboard, even though the submission flow
+   correctly honors the override. Cosmetic for v1, fixable in step 5
+   alongside gradebook math.
+
+## Resolved (step 3b-core)
+
+- `tokenVersion` column added to users; JWT carries `tv` claim; session
+  callback rejects mismatches. Bumped on password reset; teacher can force
+  logout via `POST /api/users/:userId/force-logout`.
+- Empty-body detection replaced with `isTiptapDocEmpty` walker that counts
+  non-whitespace text chars across the Tiptap tree.
+- Class soft-delete now revokes pending invites (sets `revoked_at`); the
+  accept endpoint returns clear errors (410 `INVITE_REVOKED`, 410
+  `INVITE_EXPIRED`, 409 `INVITE_ALREADY_USED`) instead of silent 404s.
 
 ## Free-tier reality
 

@@ -102,6 +102,12 @@ export function TeacherAssignmentView({ classId, assignment }: Props) {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
+            href={`/classes/${classId}/assignments/${assignment.id}/submissions`}
+            className="btn-primary"
+          >
+            View submissions
+          </Link>
+          <Link
             href={`/classes/${classId}/assignments/${assignment.id}/edit`}
             className="btn-secondary"
           >
@@ -150,10 +156,6 @@ export function TeacherAssignmentView({ classId, assignment }: Props) {
             <li>Closes: {new Date(assignment.availableUntil).toLocaleString()}</li>
           ) : null}
         </ul>
-      </section>
-
-      <section className="card p-6 text-muted text-sm text-center">
-        Submissions list + grading interface lands in <strong>step 3b</strong>.
       </section>
     </div>
   );
